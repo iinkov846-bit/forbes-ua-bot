@@ -3,7 +3,7 @@ var cheerio = require('cheerio');
 
 var BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 var CHANNEL_ID = process.env.TELEGRAM_CHANNEL_ID;
-var SIGNATURE = '\n\n💬 SkyPulse UA | Чат / Новини України';
+var SIGNATURE = '\n\n💬 sᴋʏᴘᴜʟsᴇ ᴜᴀ - ʜᴏʙиʜи уᴋᴘᴀїʜи (@skypulseua_chat)';
 var sentLinks = {};
 
 var HEADERS = {
