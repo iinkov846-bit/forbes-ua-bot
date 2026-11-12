@@ -1,120 +1,100 @@
+
 const axios = require('axios');
 const cheerio = require('cheerio');
 require('dotenv').config();
 
-// Переменные окружения
+// Используем новое имя переменной
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const CHAT_ID = process.env.CHAT_ID;
-const RSS_URL = 'https://forbes.ua/rss';
-const SITE_URL = 'https://forbes.ua/news';
+const CHANNEL_ID = process.env.TELEGRAM_CHANNEL_ID;
 
-// Хранилище отправленных ссылок (для проверки дублей)
-const sentLinks = new Set();
 const SIGNATURE = '\n\n💬 sᴋʏᴘᴜʟsᴇ ᴜᴀ - ʜᴏʙиʜи уᴋᴘᴀїʜи (@skypulseua_chat) ';
+const sentLinks = new Set();
 
-// Функция отправки ТОЛЬКО заголовка
 async function sendNewsItem(title, link) {
-    // Проверка на дубликаты по ссылке
-    if (sentLinks.has(link)) {
-        console.log(`⏭️ Пропуск (уже было): ${title}`);
-        return false;
-    }
+    if (sentLinks.has(link)) return false;
+
+    // Только чистый текст + подпись
+    const textToSend = title + SIGNATURE;
+    
+    console.log('📤 Отправляю:', JSON.stringify(textToSend));
 
     try {
-        // Отправляем ЧИСТЫЙ ТЕКСТ без HTML, ссылок и подписей
-        const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
-        await axios.post(url, {
-            chat_id: CHAT_ID,
-            text: title, // Только заголовок!
-            parse_mode: undefined // Отключаем форматирование
-        }, { timeout: 10000 });
+        const response = await axios.post(
+            `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`,
+            {
+                chat_id: CHANNEL_ID,
+                text: textToSend
+                // parse_mode НЕ указан = обычный текст
+            },
+            { timeout: 10000 }
+        );
 
         sentLinks.add(link);
-        console.log(`✅ Отправлено: ${title}`);
+        console.log('✅ УСПЕХ');
         return true;
     } catch (err) {
-        console.error('❌ Ошибка отправки:', err.response?.data || err.message);
+        console.error('❌ ОШИБКА:', JSON.stringify(err.response?.data));
         return false;
     }
 }
 
-// Парсинг RSS (приоритет)
-async function parseRSS() {
+async function getNews() {
+    // 1. Пробуем RSS
     try {
-        const { data } = await axios.get(RSS_URL, { timeout: 10000 });
+        const { data } = await axios.get('https://forbes.ua/rss', { timeout: 10000 });
         const $ = cheerio.load(data, { xmlMode: true });
         const items = [];
-
-        $('item').each((i, elem) => {
-            const title = $(elem).find('title').text().trim();
-            const link = $(elem).find('link').text().trim();
-            if (title && link && !sentLinks.has(link)) {
-                items.push({ title, link });
-            }
+        
+        $('item').each((i, el) => {
+            const t = $(el).find('title').text().trim();
+            const l = $(el).find('link').text().trim();
+            if (t && l && !sentLinks.has(l)) items.push({ title: t, link: l });
         });
-        return items.length > 0 ? items : null;
-    } catch (error) {
-        return null;
-    }
-}
+        
+        if (items.length > 0) return items;
+    } catch (e) { console.log('RSS недоступен'); }
 
-// Парсинг HTML (резерв)
-async function parseHTML() {
+    // 2. Если RSS не сработал — парсим HTML
     try {
-        const { data } = await axios.get(SITE_URL, {
-            headers: { 
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' 
-            },
+        const { data } = await axios.get('https://forbes.ua/news', {
+            headers: { 'User-Agent': 'Mozilla/5.0' },
             timeout: 15000
         });
-
         const $ = cheerio.load(data);
         const items = [];
-
-        $('article, .news-card, .post-item, .feed-item').each((i, elem) => {
-            const title = $(elem).find('h2, h3, .title, .headline').first().text().trim();
-            let link = $(elem).find('a').first().attr('href');
-            if (link && link.startsWith('/')) link = `https://forbes.ua${link}`;
-            if (title && link && !sentLinks.has(link)) {
-                items.push({ title, link });
-            }
+        
+        $('article, .news-card').each((i, el) => {
+            const t = $(el).find('h2, h3, .title').first().text().trim();
+            let l = $(el).find('a').first().attr('href');
+            if (l && l.startsWith('/')) l = `https://forbes.ua${l}`;
+            if (t && l && !sentLinks.has(l)) items.push({ title: t, link: l });
         });
         return items;
-    } catch (error) {
-        console.error('❌ Ошибка парсинга HTML:', error.message);
-        return [];
+    } catch (e) { 
+        console.error('Ошибка парсинга:', e.message); 
+        return []; 
     }
 }
 
-// Главная функция
 async function checkNews() {
-    console.log('🔍 DIAGNOSTIC: CHAT_ID =', CHAT_ID);
-    
-    if (!CHAT_ID || !BOT_TOKEN) {
-        console.error('❌ КРИТИЧЕСКАЯ ОШИБКА: Нет переменных!');
+    console.log('🔍 DIAGNOSTIC: CHANNEL_ID =', CHANNEL_ID);
+    console.log('🔍 DIAGNOSTIC: TOKEN_START =', BOT_TOKEN ? BOT_TOKEN.substring(0, 8) : 'EMPTY');
+
+    if (!CHANNEL_ID || !BOT_TOKEN) {
+        console.error('❌ НЕТ ПЕРЕМЕННЫХ! Проверь TELEGRAM_CHANNEL_ID и TELEGRAM_BOT_TOKEN');
         return;
     }
 
-    let news = await parseRSS();
-    if (news === null) news = await parseHTML();
-
+    const news = await getNews();
     if (!news || news.length === 0) {
-        console.log('ℹ️ Новых новостей нет');
+        console.log('ℹ️ Новостей нет');
         return;
     }
 
-    console.log(`🚀 Найдено ${news.length}. Беру ПЕРВУЮ...`);
-    const firstNews = news[0];
-    const success = await sendNewsItem(firstNews.title, firstNews.link);
-    
-    if (!success) {
-        console.log('⚠️ Не отправилось.');
-    }
+    console.log(`🚀 Найдено ${news.length}. Беру первую...`);
+    await sendNewsItem(news[0].title, news[0].link);
 }
 
-// Запуск
-console.log('🚀 Forbes News Bot (Только заголовки)');
-checkNews(); 
-
-// Проверка каждые 15 минут
-setInterval(checkNews, 15 * 60 * 1000); 
+console.log('🚀 Forbes Bot запущен (CLEAN TEXT MODE)');
+checkNews();
+setInterval(checkNews, 15 * 60 * 1000);
