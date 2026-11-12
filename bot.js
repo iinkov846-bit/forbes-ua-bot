@@ -1,100 +1,100 @@
-
 const axios = require('axios');
 const cheerio = require('cheerio');
-require('dotenv').config();
 
-// Используем новое имя переменной
+// Переменные окружения Railway
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const CHANNEL_ID = process.env.TELEGRAM_CHANNEL_ID;
 
-const SIGNATURE = '\n\n💬 sᴋʏᴘᴜʟsᴇ ᴜᴀ - ʜᴏʙиʜи уᴋᴘᴀїʜи (@skypulseua_chat) ';
+// Подпись
+const SIGNATURE = '\n\n💬 sᴋʏᴘᴜʟsᴇ ᴜᴀ - ʜᴏʙиʜи уᴋᴘᴀїʜи (@skypulseua_chat)';
+
+// Защита от дублей
 const sentLinks = new Set();
 
+// Отправка одной новости
 async function sendNewsItem(title, link) {
-    if (sentLinks.has(link)) return false;
+    if (sentLinks.has(link)) return;
 
-    // Только чистый текст + подпись
-    const textToSend = title + SIGNATURE;
-    
-    console.log('📤 Отправляю:', JSON.stringify(textToSend));
+    const text = title + SIGNATURE;
 
     try {
-        const response = await axios.post(
-            `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`,
+        await axios.post(
+            'https://api.telegram.org/bot' + BOT_TOKEN + '/sendMessage',
             {
                 chat_id: CHANNEL_ID,
-                text: textToSend
-                // parse_mode НЕ указан = обычный текст
+                text: text
             },
             { timeout: 10000 }
         );
-
         sentLinks.add(link);
-        console.log('✅ УСПЕХ');
-        return true;
+        console.log('OK:', title.substring(0, 50));
     } catch (err) {
-        console.error('❌ ОШИБКА:', JSON.stringify(err.response?.data));
-        return false;
+        console.error('ERR:', err.response ? JSON.stringify(err.response.data) : err.message);
     }
 }
 
+// Получение новостей
 async function getNews() {
-    // 1. Пробуем RSS
+    // Метод 1: RSS
     try {
-        const { data } = await axios.get('https://forbes.ua/rss', { timeout: 10000 });
-        const $ = cheerio.load(data, { xmlMode: true });
-        const items = [];
-        
-        $('item').each((i, el) => {
-            const t = $(el).find('title').text().trim();
-            const l = $(el).find('link').text().trim();
-            if (t && l && !sentLinks.has(l)) items.push({ title: t, link: l });
+        var res = await axios.get('https://forbes.ua/rss', { timeout: 10000 });
+        var $ = cheerio.load(res.data, { xmlMode: true });
+        var items = [];
+        $('item').each(function(i, el) {
+            var t = $(el).find('title').text().trim();
+            var l = $(el).find('link').text().trim();
+            if (t && l && !sentLinks.has(l)) {
+                items.push({ title: t, link: l });
+            }
         });
-        
         if (items.length > 0) return items;
-    } catch (e) { console.log('RSS недоступен'); }
+    } catch (e) {
+        console.log('RSS fail');
+    }
 
-    // 2. Если RSS не сработал — парсим HTML
+    // Метод 2: HTML
     try {
-        const { data } = await axios.get('https://forbes.ua/news', {
+        var res2 = await axios.get('https://forbes.ua/news', {
             headers: { 'User-Agent': 'Mozilla/5.0' },
             timeout: 15000
         });
-        const $ = cheerio.load(data);
-        const items = [];
-        
-        $('article, .news-card').each((i, el) => {
-            const t = $(el).find('h2, h3, .title').first().text().trim();
-            let l = $(el).find('a').first().attr('href');
-            if (l && l.startsWith('/')) l = `https://forbes.ua${l}`;
-            if (t && l && !sentLinks.has(l)) items.push({ title: t, link: l });
+        var $2 = cheerio.load(res2.data);
+        var items2 = [];
+        $('article, .news-card').each(function(i, el) {
+            var t = $2(el).find('h2, h3, .title').first().text().trim();
+            var l = $2(el).find('a').first().attr('href');
+            if (l && l.charAt(0) === '/') {
+                l = 'https://forbes.ua' + l;
+            }
+            if (t && l && !sentLinks.has(l)) {
+                items2.push({ title: t, link: l });
+            }
         });
-        return items;
-    } catch (e) { 
-        console.error('Ошибка парсинга:', e.message); 
-        return []; 
+        return items2;
+    } catch (e) {
+        console.log('HTML fail');
+        return [];
     }
 }
 
-async function checkNews() {
-    console.log('🔍 DIAGNOSTIC: CHANNEL_ID =', CHANNEL_ID);
-    console.log('🔍 DIAGNOSTIC: TOKEN_START =', BOT_TOKEN ? BOT_TOKEN.substring(0, 8) : 'EMPTY');
+// Запуск
+console.log('START');
+console.log('TOKEN:', BOT_TOKEN ? 'YES' : 'NO');
+console.log('CHANNEL:', CHANNEL_ID ? 'YES' : 'NO');
 
-    if (!CHANNEL_ID || !BOT_TOKEN) {
-        console.error('❌ НЕТ ПЕРЕМЕННЫХ! Проверь TELEGRAM_CHANNEL_ID и TELEGRAM_BOT_TOKEN');
-        return;
+getNews().then(function(news) {
+    if (news && news.length > 0) {
+        console.log('Found:', news.length);
+        sendNewsItem(news[0].title, news[0].link);
+    } else {
+        console.log('No news');
     }
+});
 
-    const news = await getNews();
-    if (!news || news.length === 0) {
-        console.log('ℹ️ Новостей нет');
-        return;
-    }
-
-    console.log(`🚀 Найдено ${news.length}. Беру первую...`);
-    await sendNewsItem(news[0].title, news[0].link);
-}
-
-console.log('🚀 Forbes Bot запущен (CLEAN TEXT MODE)');
-checkNews();
-setInterval(checkNews, 15 * 60 * 1000);
+setInterval(function() {
+    getNews().then(function(news) {
+        if (news && news.length > 0) {
+            sendNewsItem(news[0].title, news[0].link);
+        }
+    });
+}, 15 * 60 * 1000);
