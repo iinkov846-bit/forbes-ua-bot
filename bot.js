@@ -1,18 +1,20 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
-const { Telegraf } = require('telegraf');
 require('dotenv').config();
 
-// Инициализация
-const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
+// Переменные окружения
+const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const CHAT_ID = process.env.CHAT_ID;
 const RSS_URL = 'https://forbes.ua/rss';
 const SITE_URL = 'https://forbes.ua/news';
 
-// Хранилище отправленных ссылок
+// Хранилище отправленных ссылок (в оперативной памяти)
 const sentLinks = new Set();
 
-// Функция отправки ОДНОЙ новости
+// Фирменная подпись
+const SIGNATURE = '\n\n💬 sᴋʏᴘᴜʟsᴇ ᴜᴀ - ʜᴏʙиʜи уᴋᴘᴀїʜи (@skypulseua_chat) ';
+
+// Функция отправки одной текстовой новости
 async function sendNewsItem(title, link) {
     // Проверка на дубликаты
     if (sentLinks.has(link)) {
@@ -21,12 +23,16 @@ async function sendNewsItem(title, link) {
     }
 
     try {
-        const text = `<b>📰 ${title}</b>\n\n<a href="${link}">🔗 Читать на Forbes.ua</a>`;
+        const text = `<b>📰 ${title}</b>\n\n<a href="${link}">🔗 Читать на Forbes.ua</a>${SIGNATURE}`;
         
-        await bot.telegram.sendMessage(CHAT_ID, text, {
+        // ПРЯМОЙ ЗАПРОС К TELEGRAM API (без telegraf, только текст)
+        const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
+        await axios.post(url, {
+            chat_id: CHAT_ID,
+            text: text,
             parse_mode: 'HTML',
-            disable_web_page_preview: false 
-        });
+            disable_web_page_preview: false // Telegram сам создаст красивое превью ссылки
+        }, { timeout: 10000 });
 
         sentLinks.add(link);
         console.log(`✅ Отправлено: ${title.substring(0, 50)}...`);
@@ -37,7 +43,7 @@ async function sendNewsItem(title, link) {
     }
 }
 
-// Парсинг RSS
+// Парсинг RSS (приоритетный метод)
 async function parseRSS() {
     try {
         const { data } = await axios.get(RSS_URL, { timeout: 10000 });
@@ -57,7 +63,7 @@ async function parseRSS() {
     }
 }
 
-// Парсинг HTML
+// Парсинг HTML (резервный метод)
 async function parseHTML() {
     try {
         const { data } = await axios.get(SITE_URL, {
@@ -89,8 +95,8 @@ async function parseHTML() {
 async function checkNews() {
     console.log('🔍 DIAGNOSTIC: CHAT_ID =', CHAT_ID);
     
-    if (!CHAT_ID || CHAT_ID === 'undefined') {
-        console.error('❌ КРИТИЧЕСКАЯ ОШИБКА: CHAT_ID пустой!');
+    if (!CHAT_ID || !BOT_TOKEN) {
+        console.error('❌ КРИТИЧЕСКАЯ ОШИБКА: Отсутствуют переменные окружения!');
         return;
     }
 
@@ -103,8 +109,6 @@ async function checkNews() {
     }
 
     console.log(`🚀 Найдено ${news.length} новостей. Беру только ПЕРВУЮ новую...`);
-    
-    // ⚡ ВАЖНО: Берем только первую новость из списка
     const firstNews = news[0];
     const success = await sendNewsItem(firstNews.title, firstNews.link);
     
@@ -114,8 +118,8 @@ async function checkNews() {
 }
 
 // Запуск
-console.log('🚀 Forbes News Bot запущен (Режим: 1 новость за цикл)');
+console.log('🚀 Forbes News Bot запущен (Текстовый режим)');
 checkNews(); 
 
-// Проверка каждые 15 минут (чаще, так как берем по одной)
+// Проверка каждые 15 минут
 setInterval(checkNews, 15 * 60 * 1000); 
