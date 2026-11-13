@@ -1,10 +1,14 @@
 var axios = require('axios');
 var cheerio = require('cheerio');
+var fs = require('fs');
 
 var BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 var CHANNEL_ID = process.env.TELEGRAM_CHANNEL_ID;
 var SIGNATURE = '\n\n💬 sᴋʏᴘᴜʟsᴇ ᴜᴀ - ʜᴏʙиʜи уᴋᴘᴀїʜи (@skypulseua_chat)';
+var DATA_FILE = '/data/sent.json';
+
 var sentLinks = {};
+var isFirstRun = true;
 
 var HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -14,63 +18,73 @@ var HEADERS = {
     'Connection': 'keep-alive'
 };
 
-// Получаем og:image со страницы статьи
+// Загрузка памяти из файла (если подключен Volume)
+function loadSent() {
+    try {
+        if (fs.existsSync(DATA_FILE)) {
+            sentLinks = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+            console.log('LOADED:', Object.keys(sentLinks).length, 'sent links from disk');
+        } else {
+            console.log('No data file on disk');
+        }
+    } catch (e) {
+        console.log('Load fail:', e.message);
+    }
+}
+
+// Сохранение памяти в файл
+function saveSent() {
+    try {
+        fs.writeFileSync(DATA_FILE, JSON.stringify(sentLinks));
+    } catch (e) {
+        // Нет Volume — работаем просто в памяти
+    }
+}
+
+// Получаем картинку со страницы статьи
 function getImageFromArticle(url) {
     return axios.get(url, { headers: HEADERS, timeout: 10000 }).then(function(res) {
         var $ = cheerio.load(res.data);
         var img = $('meta[property="og:image"]').attr('content');
-        if (!img) img = $('meta[name="og:image"]').attr('content');
         if (!img) img = $('article img').first().attr('src');
-        if (!img) img = $('img[src*="forbes"]').first().attr('src');
-        console.log('IMG:', img ? img.substring(0, 80) : 'NONE');
         return img || null;
     }).catch(function() {
         return null;
     });
 }
 
-// Отправка с фото или без
-function sendNewsItem(title, link, imageUrl) {
-    if (sentLinks[link]) return;
-
-    var caption = title + SIGNATURE;
-
-    if (imageUrl) {
-        // Отправляем ФОТО с подписью
-        axios.post(
-            'https://api.telegram.org/bot' + BOT_TOKEN + '/sendPhoto',
-            {
-                chat_id: CHANNEL_ID,
-                photo: imageUrl,
-                caption: caption
-            },
-            { timeout: 15000 }
-        ).then(function() {
-            sentLinks[link] = true;
-            console.log('OK+IMG:', title.substring(0, 50));
-        }).catch(function(err) {
-            console.log('Photo fail, sending text...');
-            // Если фото не отправилось — шлём текст
-            sendTextOnly(title, link);
-        });
-    } else {
-        // Нет фото — шлём текст
-        sendTextOnly(title, link);
-    }
-}
-
+// Отправка текста
 function sendTextOnly(title, link) {
-    var text = title + SIGNATURE;
     axios.post(
         'https://api.telegram.org/bot' + BOT_TOKEN + '/sendMessage',
-        { chat_id: CHANNEL_ID, text: text },
+        { chat_id: CHANNEL_ID, text: title + SIGNATURE },
         { timeout: 10000 }
     ).then(function() {
         sentLinks[link] = true;
+        saveSent();
         console.log('OK:', title.substring(0, 50));
     }).catch(function(err) {
         console.error('ERR:', err.response ? JSON.stringify(err.response.data) : err.message);
     });
+}
+
+// Отправка с фото или без
+function sendNewsItem(title, link, imageUrl) {
+    if (imageUrl) {
+        axios.post(
+            'https://api.telegram.org/bot' + BOT_TOKEN + '/sendPhoto',
+            { chat_id: CHANNEL_ID, photo: imageUrl, caption: title + SIGNATURE },
+            { timeout: 15000 }
+        ).then(function() {
+            sentLinks[link] = true;
+            saveSent();
+            console.log('OK+IMG:', title.substring(0, 50));
+        }).catch(function() {
+            sendTextOnly(title, link);
+        });
+    } else {
+        sendTextOnly(title, link);
+    }
 }
 
 // Парсинг списка новостей
@@ -79,33 +93,24 @@ function getNewsList() {
         headers: HEADERS,
         timeout: 15000
     }).then(function(res) {
-        console.log('HTML status:', res.status);
         var $ = cheerio.load(res.data);
         var items = [];
 
-        // Ищем все ссылки на статьи
         $('a[href*="/news/"]').each(function(i, el) {
             var href = $(el).attr('href');
             var t = $(el).text().trim();
 
-            // Фильтруем: только реальные статьи (длинный заголовок)
             if (t && t.length > 15 && href && href.indexOf('/news/') > -1) {
                 var fullLink = href;
                 if (fullLink.charAt(0) === '/') fullLink = 'https://forbes.ua' + fullLink;
 
-                // Убираем дубликаты
                 var exists = false;
                 for (var j = 0; j < items.length; j++) {
                     if (items[j].link === fullLink) exists = true;
                 }
-
-                if (!exists && !sentLinks[fullLink]) {
-                    items.push({ title: t, link: fullLink });
-                }
+                if (!exists) items.push({ title: t, link: fullLink });
             }
         });
-
-        console.log('Found links:', items.length);
         return items;
     }).catch(function(e) {
         console.log('HTML fail:', e.message);
@@ -113,29 +118,56 @@ function getNewsList() {
     });
 }
 
-// Главная функция
+// Главная проверка
 function checkNews() {
-    console.log('--- CHECK ---');
-    console.log('TOKEN:', BOT_TOKEN ? 'YES' : 'NO');
-    console.log('CHANNEL:', CHANNEL_ID ? 'YES' : 'NO');
-
     getNewsList().then(function(news) {
         if (!news || news.length === 0) {
             console.log('No news');
             return;
         }
 
-        console.log('Taking first:', news[0].title.substring(0, 50));
+        // ПЕРВЫЙ ЗАПУСК: не спамим, только запоминаем
+        if (isFirstRun) {
+            isFirstRun = false;
 
-        // Шаг 1: Получаем картинку со страницы статьи
-        getImageFromArticle(news[0].link).then(function(imageUrl) {
-            // Шаг 2: Отправляем с картинкой или без
-            sendNewsItem(news[0].title, news[0].link, imageUrl);
+            if (Object.keys(sentLinks).length === 0) {
+                // Памяти нет вообще — запоминаем всё молча
+                for (var i = 0; i < news.length; i++) {
+                    sentLinks[news[i].link] = true;
+                }
+                saveSent();
+                console.log('SILENT START: remembered', news.length, 'links, no spam');
+                return;
+            }
+            // Память есть из файла — продолжаем как обычно
+        }
+
+        // Ищем первую НОВУЮ новость
+        var item = null;
+        for (var k = 0; k < news.length; k++) {
+            if (!sentLinks[news[k].link]) {
+                item = news[k];
+                break;
+            }
+        }
+
+        if (!item) {
+            console.log('Nothing new');
+            return;
+        }
+
+        console.log('NEW:', item.title.substring(0, 50));
+        getImageFromArticle(item.link).then(function(img) {
+            sendNewsItem(item.title, item.link, img);
         });
     });
 }
 
-console.log('START Forbes Bot v2 (with images)');
+console.log('START Forbes Bot v3 (no old news spam)');
+console.log('TOKEN:', BOT_TOKEN ? 'YES' : 'NO');
+console.log('CHANNEL:', CHANNEL_ID ? 'YES' : 'NO');
+
+loadSent();
 checkNews();
 
 setInterval(function() {
